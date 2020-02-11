@@ -71,3 +71,4 @@ tags
 .env
 
 .DS_Store
+.vim
