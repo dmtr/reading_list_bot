@@ -1,5 +1,6 @@
 FROM python:3.8.1-alpine
-RUN pip install -U pip
+RUN apk add build-base libffi-dev openssl-dev
+RUN pip install -U pip && pip install cryptography
 RUN mkdir -p /app/bot
 COPY requirements.txt /app/requirements.txt
 WORKDIR /app/
