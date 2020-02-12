@@ -24,7 +24,9 @@ def error(update: Update, context: CallbackContext):
 
 
 def get_conversation_handler() -> ConversationHandler:
-    return ConversationHandler(entry_points=[CommandHandler("start", start)])
+    return ConversationHandler(
+        entry_points=[CommandHandler("start", start)], states={}, fallbacks=[]
+    )
 
 
 def set_handlers(dp: Dispatcher):
