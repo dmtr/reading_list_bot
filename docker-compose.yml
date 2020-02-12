@@ -22,7 +22,7 @@ services:
         context: ./postgres/
       container_name: bot.postgres
       ports:
-        - "5436:5432"
+        - "5433:5432"
       environment:
         LC_ALL: C.UTF-8
         POSTGRES_DB: bot_test
