@@ -1,18 +1,22 @@
+import logging
 import os
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from peewee import (
     SQL,
     BigIntegerField,
     CharField,
     DateTimeField,
+    DoesNotExist,
     ForeignKeyField,
     IntegerField,
+    IntegrityError,
     Model,
     TextField,
 )
 from playhouse.pool import PooledPostgresqlExtDatabase
 
+logger = logging.getLogger(__name__)
 MAX_CONNECTIONS = 10
 STALE_TIMEOUT = 300
 
@@ -105,3 +109,18 @@ class UserSettings(BaseModel):
     class Meta:
         table_name = "user_settings"
         primary_key = False
+
+
+def get_telegram_user(telegram_id: int) -> Optional[TelegramUser]:
+    try:
+        return TelegramUser.get(TelegramUser.telegram_id == telegram_id)
+    except DoesNotExist:
+        return None
+
+
+def create_telegram_user(telegram_id: int, first_name: str) -> Optional[TelegramUser]:
+    try:
+        return TelegramUser.create(telegram_id=telegram_id, first_name=first_name)
+    except IntegrityError as e:
+        logger.error('Can not create user %s', e)
+        return None
