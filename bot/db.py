@@ -11,10 +11,12 @@ from peewee import (
     ForeignKeyField,
     IntegerField,
     IntegrityError,
+    DatabaseError,
     Model,
-    TextField,
+    TextField
 )
 from playhouse.pool import PooledPostgresqlExtDatabase
+from playhouse.postgres_ext import BinaryJSONField
 
 logger = logging.getLogger(__name__)
 MAX_CONNECTIONS = 10
@@ -81,6 +83,7 @@ class TelegramUser(BaseModel):
     created_at = DateTimeField(constraints=[SQL("DEFAULT now()")])
     first_name = CharField()
     telegram_id = BigIntegerField(unique=True)
+    context = BinaryJSONField(null=True)
 
     class Meta:
         table_name = "telegram_user"
@@ -118,9 +121,22 @@ def get_telegram_user(telegram_id: int) -> Optional[TelegramUser]:
         return None
 
 
-def create_telegram_user(telegram_id: int, first_name: str) -> Optional[TelegramUser]:
+@db.atomic()
+def create_telegram_user(telegram_id: int, first_name: str, context: Dict) -> Optional[TelegramUser]:
     try:
-        return TelegramUser.create(telegram_id=telegram_id, first_name=first_name)
+        return TelegramUser.create(telegram_id=telegram_id, first_name=first_name, context=context)
     except IntegrityError as e:
         logger.error('Can not create user %s', e)
+        return None
+
+
+@db.atomic()
+def update_telegram_user_context(telegram_id: int, context: Dict) -> Optional[TelegramUser]:
+    try:
+        user = get_telegram_user(telegram_id)
+        if user:
+            user.context.update(context)
+            user.save()
+    except DatabaseError as e:
+        logger.error('Can not update user %s', e)
         return None
