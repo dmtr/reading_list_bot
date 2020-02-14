@@ -1,9 +1,11 @@
 import logging
 import re
+from functools import wraps
+from collections import namedtuple
 from enum import IntEnum, auto
-from typing import Optional
+from typing import Optional, Tuple, Dict
 
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     CallbackContext,
     CommandHandler,
@@ -19,18 +21,29 @@ logger = logging.getLogger(__name__)
 
 SIZE_RE = re.compile("[0-9]{1,2}")
 
+MIN_LIST_SIZE = 3
+MAX_LIST_SIZE = 10
+
+LIST_SIZE = "list_size"
+ARTICLE_TTL = "article_ttl"
+SETTINGS_PROVIDED = "settings_provided"
+
 WELCOME_MSG = """Hi!
 I am ReadingListBot. We have not met before.
 I can manage your reading list, follow instructions to create one.
 """
 
-ASK_FOR_LIST_SIZE_MSG = """
-Provide size of your reading list, number between 3 and 10.
+ASK_FOR_LIST_SIZE_MSG = f"""
+Provide size of your reading list, number between {MIN_LIST_SIZE} and {MAX_LIST_SIZE} (including boundaries).
 """
 
 ASK_FOR_ITEM_TTL_MSG = """
-How long should article stay in the reading list?.
+How long should article stay in the reading list?
 """
+
+ASK_FOR_ARTICLE = f"""Provide article text or link to an article."""
+
+days_keyboard = ReplyKeyboardMarkup(["3", "5", "7"], one_time_keyboard=True)
 
 
 class State(IntEnum):
@@ -38,36 +51,71 @@ class State(IntEnum):
     SHOW_COMMANDS = auto()
     WAITING_FOR_LIST_SIZE = auto()
     WAITING_FOR_ARTILCE_TTL = auto()
+    ADD_ARTICLE = auto()
 
+
+Reply = namedtuple("Reply", ["msg", "reply_markup"])
+
+DEFAULT_MSG = Reply(WELCOME_MSG, None)
 
 STATE_MSG = {
-    State.WAITING_FOR_LIST_SIZE: ASK_FOR_LIST_SIZE_MSG,
-    State.WAITING_FOR_ARTILCE_TTL: ASK_FOR_ITEM_TTL_MSG,
+    State.WAITING_FOR_LIST_SIZE: Reply(ASK_FOR_LIST_SIZE_MSG, None),
+    State.WAITING_FOR_ARTILCE_TTL: Reply(ASK_FOR_ITEM_TTL_MSG, days_keyboard),
+    State.ADD_ARTICLE: Reply(ASK_FOR_ARTICLE, None),
 }
 
 
-def get_next_state(state: State) -> State:
+def get_state_msg(state: State) -> Tuple[str, Dict]:
+    msg, reply_markup = STATE_MSG.get(state, DEFAULT_MSG)
+    reply_kwargs = {}
+    if reply_markup is not None:
+        reply_kwargs.update(reply_markup=reply_markup)
+    return msg, reply_kwargs
+
+
+def get_next_state(context: dict) -> State:
+    state = context["state"]
     if state == State.WELCOME:
         return State.WAITING_FOR_LIST_SIZE
+    elif state == State.WAITING_FOR_LIST_SIZE:
+        if LIST_SIZE in context:
+            return State.WAITING_FOR_ARTILCE_TTL
+        else:
+            return State.WAITING_FOR_LIST_SIZE
+    elif state == State.WAITING_FOR_ARTILCE_TTL:
+        if ARTICLE_TTL in context:
+            return State.ADD_ARTILCE
+        else:
+            return State.WAITING_FOR_ARTILCE_TTL
+    elif state == State.ADD_ARTICLE:
+        return State.ADD_ARTICLE
     else:
         return State.WELCOME
 
 
-def get_state_msg(state: State) -> str:
-    return STATE_MSG.get(state, WELCOME_MSG)
+def log_error(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except Exception as e:
+            logger.exception("Got exception %s", e)
+            raise e
+
+    return wrapper
 
 
-def welcome(update: Update, context: CallbackContext):
+@log_error
+def welcome(update: Update, context: CallbackContext) -> State:
     telegram_id = update.message.from_user.id
     logger.debug("Telegram User %s", telegram_id)
     user = get_telegram_user(telegram_id)
-    logger.debug("DB user %s", user)
+    logger.debug("User context %s", user.context if user else None)
     if user:
-        state = user.context["state"]
-        next_state = get_next_state(state)
+        next_state = get_next_state(user.context)
         logger.debug("State %s", next_state)
-        msg = get_state_msg(next_state)
-        update.message.reply_text(msg)
+        msg, reply_kwargs = get_state_msg(next_state)
+        update.message.reply_text(msg, **reply_kwargs)
         return next_state
     else:
         user = create_telegram_user(
@@ -87,25 +135,57 @@ def get_list_size(msg: str) -> Optional[int]:
         pass
 
 
-def waiting_for_list_size(update: Update, context: CallbackContext):
+@log_error
+def waiting_for_list_size(update: Update, context: CallbackContext) -> State:
+    telegram_id = update.message.from_user.id
     size = get_list_size(update.message.text)
-    if size is None:
-        update.message.reply_text(ASK_FOR_LIST_SIZE_MSG)
-        return State.WELCOME
-    else:
-        telegram_id = update.message.from_user.id
-        ctx = {"state": State.WAITING_FOR_ARTILCE_TTL, "list_size": size}
-        update_telegram_user_context(telegram_id, ctx)
-        update.message.reply_text(ASK_FOR_ITEM_TTL_MSG)
-        return State.WAITING_FOR_ARTILCE_TTL
+    ctx = {}
+    state = State.WAITING_FOR_LIST_SIZE
+    is_size_valid = size >= MIN_LIST_SIZE and size <= MAX_LIST_SIZE
+
+    if size is not None and is_size_valid:
+        state = State.WAITING_FOR_ARTILCE_TTL
+        ctx.update(list_size=size)
+
+    ctx.update(state=state)
+    update_telegram_user_context(telegram_id, ctx)
+    msg, reply_kwargs = get_state_msg(state)
+    update.message.reply_text(msg, **reply_kwargs)
+    return state
 
 
-def waiting_for_artilce_ttl(update: Update, context: CallbackContext):
-    update.message.reply_text(update.message.text)
+def get_articel_ttl(msg: str) -> int:
+    try:
+        return int(msg)
+    except ValueError:
+        pass
+
+
+@log_error
+def waiting_for_artilce_ttl(update: Update, context: CallbackContext) -> State:
+    telegram_id = update.message.from_user.id
+    article_ttl = get_articel_ttl(update.message.text)
+    ctx = {}
+    state = State.WAITING_FOR_ARTILCE_TTL
+
+    if article_ttl:
+        state = State.ADD_ARTICLE
+        ctx.update(article_ttl=article_ttl, settings_provided=True)
+
+    ctx.update(state=state)
+    update_telegram_user_context(telegram_id, ctx)
+    msg, reply_kwargs = get_state_msg(state)
+    update.message.reply_text(msg, **reply_kwargs)
+    return state
+
+
+@log_error
+def add_artilce(update: Update, context: CallbackContext) -> State:
+    update.message.reply_text("Ok")
     return State.WELCOME
 
 
-def error(update: Update, context: CallbackContext):
+def error(update: Update, context: CallbackContext) -> None:
     logger.error('Update "%s" caused error "%s"', update, context.error)
 
 
@@ -118,8 +198,9 @@ def get_conversation_handler() -> ConversationHandler:
                 MessageHandler(Filters.regex("[0-9]{1,2}"), waiting_for_list_size)
             ],
             State.WAITING_FOR_ARTILCE_TTL: [
-                MessageHandler(Filters.text, waiting_for_artilce_ttl)
+                MessageHandler(Filters.regex("[0-9]{1}"), waiting_for_artilce_ttl)
             ],
+            State.ADD_ARTICLE: [MessageHandler(Filters.text, add_artilce)],
         },
         fallbacks=[MessageHandler(Filters.all, welcome)],
     )
