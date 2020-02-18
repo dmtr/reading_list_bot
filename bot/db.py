@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 MAX_CONNECTIONS = 10
 STALE_TIMEOUT = 300
 
-ARTICLE_STATUSES = ("NEW", "READ")
+ARTICLE_STATUS_NEW = "NEW"
+ARTICLE_STATUS_READ = "READ"
+ARTICLE_STATUSES = (ARTICLE_STATUS_NEW, ARTICLE_STATUS_READ)
 
 db = PooledPostgresqlExtDatabase(None)
 
@@ -139,4 +141,15 @@ def update_telegram_user_context(telegram_id: int, context: Dict) -> Optional[Te
             user.save()
     except DatabaseError as e:
         logger.error('Can not update user %s', e)
+        return None
+
+
+@db.atomic()
+def create_article(user: TelegramUser, text: str) -> Optional[Article]:
+    try:
+        article = Article.create(text=text, status=ARTICLE_STATUS_NEW)
+        UserArticleM2M.create(user_id=user.id, article_id=article.id)
+        return article
+    except DatabaseError as e:
+        logger.error('Can not create article %s', e)
         return None
