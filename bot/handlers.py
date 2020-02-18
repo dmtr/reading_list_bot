@@ -1,11 +1,11 @@
 import logging
 import re
-from functools import wraps
 from collections import namedtuple
 from enum import IntEnum, auto
-from typing import Optional, Tuple, Dict
+from functools import wraps
+from typing import Dict, Optional, Tuple
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import (
     CallbackContext,
     CommandHandler,
@@ -15,7 +15,12 @@ from telegram.ext import (
     MessageHandler,
 )
 
-from bot.db import create_telegram_user, get_telegram_user, update_telegram_user_context
+from bot.db import (
+    create_article,
+    create_telegram_user,
+    get_telegram_user,
+    update_telegram_user_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +46,11 @@ ASK_FOR_ITEM_TTL_MSG = """
 How long should article stay in the reading list?
 """
 
-ASK_FOR_ARTICLE = f"""Provide article text or link to an article."""
+ASK_FOR_ARTICLE_MSG = "Provide article text or link to an article."
+
+ARTICLE_CREATED_MSG = "Article successfully created."
+
+ERROR_MSG = "Sorry, there was an error"
 
 days_keyboard = ReplyKeyboardMarkup(["3", "5", "7"], one_time_keyboard=True)
 
@@ -61,7 +70,7 @@ DEFAULT_MSG = Reply(WELCOME_MSG, None)
 STATE_MSG = {
     State.WAITING_FOR_LIST_SIZE: Reply(ASK_FOR_LIST_SIZE_MSG, None),
     State.WAITING_FOR_ARTILCE_TTL: Reply(ASK_FOR_ITEM_TTL_MSG, days_keyboard),
-    State.ADD_ARTICLE: Reply(ASK_FOR_ARTICLE, None),
+    State.ADD_ARTICLE: Reply(ASK_FOR_ARTICLE_MSG, None),
 }
 
 
@@ -181,7 +190,19 @@ def waiting_for_artilce_ttl(update: Update, context: CallbackContext) -> State:
 
 @log_error
 def add_artilce(update: Update, context: CallbackContext) -> State:
-    update.message.reply_text("Ok")
+    telegram_id = update.message.from_user.id
+    user = get_telegram_user(telegram_id)
+    if user is None:
+        logger.error("User not found by id: %s", telegram_id)
+        update.message.reply_text(ERROR_MSG)
+        return State.WELCOME
+
+    article = create_article(user, update.message.text)
+    if article is None:
+        update.message.reply_text(ERROR_MSG)
+        return State.ADD_ARTILCE
+
+    update.message.reply_text(ARTICLE_CREATED_MSG)
     return State.WELCOME
 
 
