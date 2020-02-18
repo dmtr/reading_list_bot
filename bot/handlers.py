@@ -20,6 +20,8 @@ from bot.db import (
     create_telegram_user,
     get_telegram_user,
     update_telegram_user_context,
+    create_user_settings,
+    get_user_articles,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,10 @@ How long should article stay in the reading list?
 ASK_FOR_ARTICLE_MSG = "Provide article text or link to an article."
 
 ARTICLE_CREATED_MSG = "Article successfully created."
+
+LIST_IS_FULL_MSG = "List is full, you can not add more articles."
+
+ARTICLE_ALREADY_EXISTS_MSG = "Article already exists."
 
 ERROR_MSG = "Sorry, there was an error"
 
@@ -93,7 +99,7 @@ def get_next_state(context: dict) -> State:
             return State.WAITING_FOR_LIST_SIZE
     elif state == State.WAITING_FOR_ARTILCE_TTL:
         if ARTICLE_TTL in context:
-            return State.ADD_ARTILCE
+            return State.ADD_ARTICLE
         else:
             return State.WAITING_FOR_ARTILCE_TTL
     elif state == State.ADD_ARTICLE:
@@ -178,6 +184,17 @@ def waiting_for_artilce_ttl(update: Update, context: CallbackContext) -> State:
     state = State.WAITING_FOR_ARTILCE_TTL
 
     if article_ttl:
+        user = get_telegram_user(telegram_id)
+        list_size = user.context.get(LIST_SIZE)
+        if list_size is None:
+            update.message.reply_text(ERROR_MSG)
+            return State.WAITING_FOR_LIST_SIZE
+        else:
+            settings = create_user_settings(user, list_size, article_ttl)
+            if settings is None:
+                update.message.reply_text(ERROR_MSG)
+                return State.WAITING_FOR_ARTILCE_TTL
+
         state = State.ADD_ARTICLE
         ctx.update(article_ttl=article_ttl, settings_provided=True)
 
@@ -189,7 +206,7 @@ def waiting_for_artilce_ttl(update: Update, context: CallbackContext) -> State:
 
 
 @log_error
-def add_artilce(update: Update, context: CallbackContext) -> State:
+def add_article(update: Update, context: CallbackContext) -> State:
     telegram_id = update.message.from_user.id
     user = get_telegram_user(telegram_id)
     if user is None:
@@ -197,10 +214,24 @@ def add_artilce(update: Update, context: CallbackContext) -> State:
         update.message.reply_text(ERROR_MSG)
         return State.WELCOME
 
-    article = create_article(user, update.message.text)
+    articles = get_user_articles(user.id)
+    logger.debug("Articles: %s", articles)
+    settings = user.settings[0]
+    logger.debug("Settings: %s", settings.reading_list_size)
+    if len(articles) >= settings.reading_list_size:
+        update.message.reply_text(LIST_IS_FULL_MSG)
+        return State.WELCOME
+
+    new_article_text = update.message.text
+    old_article = [a for a in articles if a.text == new_article_text]
+    if len(old_article) > 0:
+        update.message.reply_text(ARTICLE_ALREADY_EXISTS_MSG)
+        return State.WELCOME
+
+    article = create_article(user, new_article_text)
     if article is None:
         update.message.reply_text(ERROR_MSG)
-        return State.ADD_ARTILCE
+        return State.ADD_ARTICLE
 
     update.message.reply_text(ARTICLE_CREATED_MSG)
     return State.WELCOME
@@ -212,7 +243,10 @@ def error(update: Update, context: CallbackContext) -> None:
 
 def get_conversation_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("start", welcome)],
+        entry_points=[
+            CommandHandler("start", welcome),
+            CommandHandler("add_article", add_article),
+        ],
         states={
             State.WELCOME: [MessageHandler(Filters.all, welcome)],
             State.WAITING_FOR_LIST_SIZE: [
@@ -221,7 +255,7 @@ def get_conversation_handler() -> ConversationHandler:
             State.WAITING_FOR_ARTILCE_TTL: [
                 MessageHandler(Filters.regex("[0-9]{1}"), waiting_for_artilce_ttl)
             ],
-            State.ADD_ARTICLE: [MessageHandler(Filters.text, add_artilce)],
+            State.ADD_ARTICLE: [MessageHandler(Filters.text, add_article)],
         },
         fallbacks=[MessageHandler(Filters.all, welcome)],
     )
