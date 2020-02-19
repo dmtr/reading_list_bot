@@ -16,6 +16,7 @@ from telegram.ext import (
 )
 
 from bot.db import (
+    TelegramUser,
     create_article,
     create_telegram_user,
     get_telegram_user,
@@ -58,6 +59,12 @@ ARTICLE_ALREADY_EXISTS_MSG = "Article already exists."
 
 ERROR_MSG = "Sorry, there was an error"
 
+SHOW_COMMANDS_MSG = """Hello again! You can execute the following commands:
+/start
+/add_article
+/show_commands
+"""
+
 days_keyboard = ReplyKeyboardMarkup(["3", "5", "7"], one_time_keyboard=True)
 
 
@@ -77,6 +84,7 @@ STATE_MSG = {
     State.WAITING_FOR_LIST_SIZE: Reply(ASK_FOR_LIST_SIZE_MSG, None),
     State.WAITING_FOR_ARTILCE_TTL: Reply(ASK_FOR_ITEM_TTL_MSG, days_keyboard),
     State.ADD_ARTICLE: Reply(ASK_FOR_ARTICLE_MSG, None),
+    State.SHOW_COMMANDS: Reply(SHOW_COMMANDS_MSG, None),
 }
 
 
@@ -91,7 +99,10 @@ def get_state_msg(state: State) -> Tuple[str, Dict]:
 def get_next_state(context: dict) -> State:
     state = context["state"]
     if state == State.WELCOME:
-        return State.WAITING_FOR_LIST_SIZE
+        if SETTINGS_PROVIDED in context:
+            return ConversationHandler.END
+        else:
+            return State.WAITING_FOR_LIST_SIZE
     elif state == State.WAITING_FOR_LIST_SIZE:
         if LIST_SIZE in context:
             return State.WAITING_FOR_ARTILCE_TTL
@@ -105,7 +116,7 @@ def get_next_state(context: dict) -> State:
     elif state == State.ADD_ARTICLE:
         return State.ADD_ARTICLE
     else:
-        return State.WELCOME
+        return ConversationHandler.END
 
 
 def log_error(f):
@@ -120,8 +131,15 @@ def log_error(f):
     return wrapper
 
 
+def get_info_msg(user: TelegramUser) -> str:
+    articles = get_user_articles(user.id)
+    msg = f"Hello {user.first_name}! You have {len(articles)} unread articles. Type /show_commands for a list of commands."
+    return msg
+
+
 @log_error
 def welcome(update: Update, context: CallbackContext) -> State:
+    logger.debug("welcome")
     telegram_id = update.message.from_user.id
     logger.debug("Telegram User %s", telegram_id)
     user = get_telegram_user(telegram_id)
@@ -129,6 +147,12 @@ def welcome(update: Update, context: CallbackContext) -> State:
     if user:
         next_state = get_next_state(user.context)
         logger.debug("State %s", next_state)
+        if next_state == ConversationHandler.END:
+            msg = get_info_msg(user)
+            update.message.reply_text(msg)
+            return ConversationHandler.END
+
+        update_telegram_user_context(telegram_id, {"state": next_state})
         msg, reply_kwargs = get_state_msg(next_state)
         update.message.reply_text(msg, **reply_kwargs)
         return next_state
@@ -205,36 +229,51 @@ def waiting_for_artilce_ttl(update: Update, context: CallbackContext) -> State:
     return state
 
 
-@log_error
-def add_article(update: Update, context: CallbackContext) -> State:
-    telegram_id = update.message.from_user.id
-    user = get_telegram_user(telegram_id)
-    if user is None:
-        logger.error("User not found by id: %s", telegram_id)
-        update.message.reply_text(ERROR_MSG)
-        return State.WELCOME
-
+def check_and_create_article(user: TelegramUser, update: Update) -> (str, State):
     articles = get_user_articles(user.id)
-    logger.debug("Articles: %s", articles)
     settings = user.settings[0]
-    logger.debug("Settings: %s", settings.reading_list_size)
     if len(articles) >= settings.reading_list_size:
-        update.message.reply_text(LIST_IS_FULL_MSG)
-        return State.WELCOME
+        return LIST_IS_FULL_MSG, State.WELCOME
 
     new_article_text = update.message.text
     old_article = [a for a in articles if a.text == new_article_text]
     if len(old_article) > 0:
-        update.message.reply_text(ARTICLE_ALREADY_EXISTS_MSG)
-        return State.WELCOME
+        return ARTICLE_ALREADY_EXISTS_MSG, State.WELCOME
 
     article = create_article(user, new_article_text)
     if article is None:
-        update.message.reply_text(ERROR_MSG)
-        return State.ADD_ARTICLE
+        return ERROR_MSG, State.ADD_ARTICLE
 
-    update.message.reply_text(ARTICLE_CREATED_MSG)
-    return State.WELCOME
+    return ARTICLE_CREATED_MSG, State.WELCOME
+
+
+@log_error
+def add_article(update: Update, context: CallbackContext) -> State:
+    telegram_id = update.message.from_user.id
+    user = get_telegram_user(telegram_id)
+    state = State.WELCOME
+    msg = None
+    ctx = {}
+
+    if user is None:
+        logger.error("User not found by id: %s", telegram_id)
+        msg = ERROR_MSG
+        state = State.WELCOME
+    else:
+        msg, state = check_and_create_article(user, update)
+
+    ctx.update(state=state)
+    update_telegram_user_context(telegram_id, ctx)
+    msg = msg or ERROR_MSG
+    update.message.reply_text(msg)
+    return state
+
+
+@log_error
+def show_commands(update: Update, context: CallbackContext) -> State:
+    logger.debug("show_commands")
+    update.message.reply_text(SHOW_COMMANDS_MSG)
+    return ConversationHandler.END
 
 
 def error(update: Update, context: CallbackContext) -> None:
@@ -246,6 +285,7 @@ def get_conversation_handler() -> ConversationHandler:
         entry_points=[
             CommandHandler("start", welcome),
             CommandHandler("add_article", add_article),
+            CommandHandler("show_commands", show_commands)
         ],
         states={
             State.WELCOME: [MessageHandler(Filters.all, welcome)],
@@ -256,8 +296,9 @@ def get_conversation_handler() -> ConversationHandler:
                 MessageHandler(Filters.regex("[0-9]{1}"), waiting_for_artilce_ttl)
             ],
             State.ADD_ARTICLE: [MessageHandler(Filters.text, add_article)],
+            State.SHOW_COMMANDS: [MessageHandler(Filters.all, show_commands)],
         },
-        fallbacks=[MessageHandler(Filters.all, welcome)],
+        fallbacks=[CommandHandler("cancel", show_commands)]
     )
 
 
