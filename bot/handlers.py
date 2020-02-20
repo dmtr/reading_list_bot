@@ -57,12 +57,17 @@ LIST_IS_FULL_MSG = "List is full, you can not add more articles."
 
 ARTICLE_ALREADY_EXISTS_MSG = "Article already exists."
 
+ARTICLE_CANNOT_BE_EMPTY_MSG = "Article cannot be empty."
+
+ARTICLES_MSG = "Articles:"
+
 ERROR_MSG = "Sorry, there was an error"
 
-SHOW_COMMANDS_MSG = """Hello again! You can execute the following commands:
+SHOW_COMMANDS_MSG = """You can execute the following commands:
 /start
-/add_article
+/add_article [text]
 /show_commands
+/show_articles
 """
 
 days_keyboard = ReplyKeyboardMarkup(["3", "5", "7"], one_time_keyboard=True)
@@ -74,11 +79,13 @@ class State(IntEnum):
     WAITING_FOR_LIST_SIZE = auto()
     WAITING_FOR_ARTILCE_TTL = auto()
     ADD_ARTICLE = auto()
+    SHOW_ARTICLES = auto()
+    SHOW_ARTICLE = auto()
 
 
 Reply = namedtuple("Reply", ["msg", "reply_markup"])
 
-DEFAULT_MSG = Reply(WELCOME_MSG, None)
+DEFAULT_MSG = Reply("Yes, sir!", None)
 
 STATE_MSG = {
     State.WAITING_FOR_LIST_SIZE: Reply(ASK_FOR_LIST_SIZE_MSG, None),
@@ -115,6 +122,8 @@ def get_next_state(context: dict) -> State:
             return State.WAITING_FOR_ARTILCE_TTL
     elif state == State.ADD_ARTICLE:
         return State.ADD_ARTICLE
+    elif state == State.SHOW_ARTICLES:
+        return State.SHOW_ARTICLE
     else:
         return ConversationHandler.END
 
@@ -152,7 +161,6 @@ def welcome(update: Update, context: CallbackContext) -> State:
             update.message.reply_text(msg)
             return ConversationHandler.END
 
-        update_telegram_user_context(telegram_id, {"state": next_state})
         msg, reply_kwargs = get_state_msg(next_state)
         update.message.reply_text(msg, **reply_kwargs)
         return next_state
@@ -229,13 +237,25 @@ def waiting_for_artilce_ttl(update: Update, context: CallbackContext) -> State:
     return state
 
 
+def get_articel_text(msg: str) -> str:
+    if msg.startswith("/add_article"):
+        return msg[len("/add_article"):]
+    else:
+        return msg
+
+
 def check_and_create_article(user: TelegramUser, update: Update) -> (str, State):
     articles = get_user_articles(user.id)
     settings = user.settings[0]
     if len(articles) >= settings.reading_list_size:
         return LIST_IS_FULL_MSG, State.WELCOME
 
-    new_article_text = update.message.text
+    new_article_text = get_articel_text(update.message.text)
+    if not new_article_text:
+        return ARTICLE_CANNOT_BE_EMPTY_MSG, State.ADD_ARTICLE
+
+    new_article_text = new_article_text.strip()
+
     old_article = [a for a in articles if a.text == new_article_text]
     if len(old_article) > 0:
         return ARTICLE_ALREADY_EXISTS_MSG, State.WELCOME
@@ -276,6 +296,46 @@ def show_commands(update: Update, context: CallbackContext) -> State:
     return ConversationHandler.END
 
 
+@log_error
+def show_articles(update: Update, context: CallbackContext) -> State:
+    telegram_id = update.message.from_user.id
+    user = get_telegram_user(telegram_id)
+    articles = get_user_articles(user.id)
+
+    reply_markup = ReplyKeyboardMarkup(
+        [[f"{a.id} {a.text[:80]}"] for a in articles], one_time_keyboard=True
+    )
+
+    update_telegram_user_context(telegram_id, {"state": State.SHOW_ARTICLES})
+
+    update.message.reply_text(ARTICLES_MSG, reply_markup=reply_markup)
+    return State.SHOW_ARTICLE
+
+
+def get_articel_id(text: str) -> Optional[int]:
+    try:
+        return int(text[0: text.find(" ")])
+    except ValueError:
+        pass
+
+
+@log_error
+def show_article(update: Update, context: CallbackContext) -> State:
+    telegram_id = update.message.from_user.id
+    user = get_telegram_user(telegram_id)
+    article_id = get_articel_id(update.message.text)
+
+    if article_id is not None:
+        article = [a for a in get_user_articles(user.id) if a.id == article_id]
+        if article:
+            update.message.reply_text(article[0].text)
+        else:
+            logger.error("Article not found: id %s, user_id %s", article_id, user.id)
+
+    update_telegram_user_context(telegram_id, {"state": State.WELCOME})
+    return State.WELCOME
+
+
 def error(update: Update, context: CallbackContext) -> None:
     logger.error('Update "%s" caused error "%s"', update, context.error)
 
@@ -285,7 +345,8 @@ def get_conversation_handler() -> ConversationHandler:
         entry_points=[
             CommandHandler("start", welcome),
             CommandHandler("add_article", add_article),
-            CommandHandler("show_commands", show_commands)
+            CommandHandler("show_commands", show_commands),
+            CommandHandler("show_articles", show_articles),
         ],
         states={
             State.WELCOME: [MessageHandler(Filters.all, welcome)],
@@ -297,8 +358,9 @@ def get_conversation_handler() -> ConversationHandler:
             ],
             State.ADD_ARTICLE: [MessageHandler(Filters.text, add_article)],
             State.SHOW_COMMANDS: [MessageHandler(Filters.all, show_commands)],
+            State.SHOW_ARTICLE: [MessageHandler(Filters.text, show_article)],
         },
-        fallbacks=[CommandHandler("cancel", show_commands)]
+        fallbacks=[CommandHandler("cancel", show_commands)],
     )
 
 
