@@ -201,7 +201,7 @@ def waiting_for_list_size(update: Update, context: CallbackContext) -> State:
     return state
 
 
-def get_articel_ttl(msg: str) -> int:
+def get_article_ttl(msg: str) -> int:
     try:
         return int(msg)
     except ValueError:
@@ -211,7 +211,7 @@ def get_articel_ttl(msg: str) -> int:
 @log_error
 def waiting_for_artilce_ttl(update: Update, context: CallbackContext) -> State:
     telegram_id = update.message.from_user.id
-    article_ttl = get_articel_ttl(update.message.text)
+    article_ttl = get_article_ttl(update.message.text)
     ctx = {}
     state = State.WAITING_FOR_ARTILCE_TTL
 
