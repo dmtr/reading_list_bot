@@ -180,3 +180,26 @@ def get_user_articles(user_id: int, status: str = ARTICLE_STATUS_NEW) -> List[Ar
     except DatabaseError as e:
         logger.error("Can not get articles %s", e)
         return []
+
+
+@db.atomic()
+def get_article(article_id: int) -> Optional[Article]:
+    try:
+        return Article.get(Article.id == article_id)
+    except DoesNotExist:
+        return None
+
+
+@db.atomic()
+def update_article_status(
+    article_id: int, status: str
+) -> Optional[TelegramUser]:
+    try:
+        article = get_article(article_id)
+        if article:
+            article.status = status
+            article.save()
+            return article
+    except DatabaseError as e:
+        logger.error("Can not update article %s status %s", article_id, e)
+        return None
