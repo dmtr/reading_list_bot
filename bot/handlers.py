@@ -312,7 +312,7 @@ def show_articles(update: Update, context: CallbackContext) -> State:
     return State.SHOW_ARTICLE
 
 
-def get_articel_id(text: str) -> Optional[int]:
+def get_article_id(text: str) -> Optional[int]:
     try:
         return int(text[0: text.find(" ")])
     except ValueError:
@@ -323,7 +323,7 @@ def get_articel_id(text: str) -> Optional[int]:
 def show_article(update: Update, context: CallbackContext) -> State:
     telegram_id = update.message.from_user.id
     user = get_telegram_user(telegram_id)
-    article_id = get_articel_id(update.message.text)
+    article_id = get_article_id(update.message.text)
 
     if article_id is not None:
         article = [a for a in get_user_articles(user.id) if a.id == article_id]
