@@ -3,7 +3,7 @@ import re
 from collections import namedtuple
 from enum import IntEnum, auto
 from functools import wraps
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import (
@@ -16,13 +16,17 @@ from telegram.ext import (
 )
 
 from bot.db import (
+    ARTICLE_STATUS_READ,
+    Article,
     TelegramUser,
     create_article,
     create_telegram_user,
-    get_telegram_user,
-    update_telegram_user_context,
     create_user_settings,
+    get_article,
+    get_telegram_user,
     get_user_articles,
+    update_article_status,
+    update_telegram_user_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,6 +72,7 @@ SHOW_COMMANDS_MSG = """You can execute the following commands:
 /add_article [text]
 /show_commands
 /show_articles
+/mark_articles
 """
 
 days_keyboard = ReplyKeyboardMarkup(["3", "5", "7"], one_time_keyboard=True)
@@ -81,6 +86,8 @@ class State(IntEnum):
     ADD_ARTICLE = auto()
     SHOW_ARTICLES = auto()
     SHOW_ARTICLE = auto()
+    MARK_ARTICLES = auto()
+    MARK_ARTICLE_READ = auto()
 
 
 Reply = namedtuple("Reply", ["msg", "reply_markup"])
@@ -124,6 +131,8 @@ def get_next_state(context: dict) -> State:
         return State.ADD_ARTICLE
     elif state == State.SHOW_ARTICLES:
         return State.SHOW_ARTICLE
+    elif state == State.MARK_ARTICLES:
+        return State.MARK_ARTICLE_READ
     else:
         return ConversationHandler.END
 
@@ -237,9 +246,9 @@ def waiting_for_artilce_ttl(update: Update, context: CallbackContext) -> State:
     return state
 
 
-def get_articel_text(msg: str) -> str:
+def get_article_text(msg: str) -> str:
     if msg.startswith("/add_article"):
-        return msg[len("/add_article"):]
+        return msg[len("/add_article") :]
     else:
         return msg
 
@@ -250,7 +259,7 @@ def check_and_create_article(user: TelegramUser, update: Update) -> (str, State)
     if len(articles) >= settings.reading_list_size:
         return LIST_IS_FULL_MSG, State.WELCOME
 
-    new_article_text = get_articel_text(update.message.text)
+    new_article_text = get_article_text(update.message.text)
     if not new_article_text:
         return ARTICLE_CANNOT_BE_EMPTY_MSG, State.ADD_ARTICLE
 
@@ -296,20 +305,32 @@ def show_commands(update: Update, context: CallbackContext) -> State:
     return ConversationHandler.END
 
 
-@log_error
-def show_articles(update: Update, context: CallbackContext) -> State:
-    telegram_id = update.message.from_user.id
-    user = get_telegram_user(telegram_id)
-    articles = get_user_articles(user.id)
-
-    reply_markup = ReplyKeyboardMarkup(
+def get_articles_keyboard(articles: List[Article]) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
         [[f"{a.id} {a.text[:80]}"] for a in articles], one_time_keyboard=True
     )
 
-    update_telegram_user_context(telegram_id, {"state": State.SHOW_ARTICLES})
+
+def _show_articles(update: Update, state: State) -> None:
+    telegram_id = update.message.from_user.id
+    user = get_telegram_user(telegram_id)
+    articles = get_user_articles(user.id)
+    reply_markup = get_articles_keyboard(articles)
+
+    update_telegram_user_context(telegram_id, {"state": state})
 
     update.message.reply_text(ARTICLES_MSG, reply_markup=reply_markup)
-    return State.SHOW_ARTICLE
+    return state
+
+
+@log_error
+def show_articles(update: Update, context: CallbackContext) -> State:
+    return _show_articles(update, State.SHOW_ARTICLE)
+
+
+@log_error
+def mark_articles(update: Update, context: CallbackContext) -> State:
+    return _show_articles(update, State.MARK_ARTICLE_READ)
 
 
 def get_article_id(text: str) -> Optional[int]:
@@ -322,15 +343,27 @@ def get_article_id(text: str) -> Optional[int]:
 @log_error
 def show_article(update: Update, context: CallbackContext) -> State:
     telegram_id = update.message.from_user.id
-    user = get_telegram_user(telegram_id)
     article_id = get_article_id(update.message.text)
 
     if article_id is not None:
-        article = [a for a in get_user_articles(user.id) if a.id == article_id]
+        article = get_article(article_id)
+        logger.debug("Found article with id %s", article_id)
         if article:
-            update.message.reply_text(article[0].text)
+            update.message.reply_text(article.text)
         else:
-            logger.error("Article not found: id %s, user_id %s", article_id, user.id)
+            logger.error("Article not found: id %s", article_id)
+
+    update_telegram_user_context(telegram_id, {"state": State.WELCOME})
+    return State.WELCOME
+
+
+@log_error
+def mark_article_read(update: Update, context: CallbackContext) -> State:
+    telegram_id = update.message.from_user.id
+    article_id = get_article_id(update.message.text)
+
+    if article_id is not None:
+        update_article_status(article_id, ARTICLE_STATUS_READ)
 
     update_telegram_user_context(telegram_id, {"state": State.WELCOME})
     return State.WELCOME
@@ -347,6 +380,7 @@ def get_conversation_handler() -> ConversationHandler:
             CommandHandler("add_article", add_article),
             CommandHandler("show_commands", show_commands),
             CommandHandler("show_articles", show_articles),
+            CommandHandler("mark_articles", mark_articles),
         ],
         states={
             State.WELCOME: [MessageHandler(Filters.all, welcome)],
@@ -359,8 +393,9 @@ def get_conversation_handler() -> ConversationHandler:
             State.ADD_ARTICLE: [MessageHandler(Filters.text, add_article)],
             State.SHOW_COMMANDS: [MessageHandler(Filters.all, show_commands)],
             State.SHOW_ARTICLE: [MessageHandler(Filters.text, show_article)],
+            State.MARK_ARTICLE_READ: [MessageHandler(Filters.text, mark_article_read)],
         },
-        fallbacks=[CommandHandler("cancel", show_commands)],
+        fallbacks=[CommandHandler("start", show_commands)],
     )
 
 
